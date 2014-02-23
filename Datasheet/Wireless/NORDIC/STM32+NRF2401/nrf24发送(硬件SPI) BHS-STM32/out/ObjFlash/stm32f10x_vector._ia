@@ -1,0 +1,1 @@
+--cpu Cortex-M3 -g --apcs=interwork --pd "__MICROLIB SETA 1" -I D:\Soft\Keil4\ARM\RV31\Inc -I D:\Soft\Keil4\ARM\CMSIS\Include -I D:\Soft\Keil4\ARM\Inc\ST\STM32F10x --list "..\out\LstFlash\stm32f10x_vector.lst" --xref -o "..\out\ObjFlash\stm32f10x_vector.o" --depend "..\out\ObjFlash\stm32f10x_vector.d" "stm32f10x_vector.s"

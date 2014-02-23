@@ -1,0 +1,114 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<!-- saved from url=(0047)http://www.mcufan.com/article/mcu-pcbdesign.htm -->
+<HTML><STYLE>.note-anywhere {
+    background-color: #fff046;
+	color: #006;
+    height: 200px;
+    padding: 10px;
+    position: absolute;
+    width: 150px;
+    -webkit-box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.5);
+}
+
+.note-anywhere:hover .closebutton {
+    display: block;
+} 
+
+.note-anywhere .closebutton {
+    display: none;
+    background-image: url(deleteButton.png);
+    height: 30px;
+    position: absolute;
+    left: -15px;
+    top: -15px;
+    width: 30px;
+}
+
+.note-anywhere  .edit {
+    outline: none;
+	text-align:left;
+	font-size: 14px;
+	font-family: arial, sans-serif;
+	height:190px;
+	overflow:auto;
+}
+
+.note-anywhere .timestamp {
+    position: absolute;
+    left: 0px;
+    right: 0px;
+    bottom: 0px;
+    font-size: 9px;
+    background-color: #db0;
+    color: white;
+    /*border-top: 1px solid #a80;*/
+    padding: 2px 4px;
+    text-align: right;
+}</STYLE><HEAD><META http-equiv="Content-Type" content="text/html; charset=GBK">
+<TITLE>单片机系统印刷电路板设计</TITLE>
+
+<LINK id="noteanywherecss" media="screen" type="text/css" rel="stylesheet" href="data:text/css,.note-anywhere%20.closebutton%7Bbackground-image%3A%20url%28chrome-extension%3A//bohahkiiknkelflnjjlipnaeapefmjbh/asset/deleteButton.png%29%3B%7D%0A"></HEAD><BODY>
+<P><SPAN style="font-variant: small-caps">&nbsp; </SPAN><FONT color="#0000FF" size="4" face="华文中宋"><SPAN style="font-variant: small-caps"> 
+  &nbsp;</SPAN></FONT> </P>
+<TABLE width="100%" height="843" border="0">
+  <TBODY><TR> 
+    <TD width="2%" height="22">&nbsp;</TD>
+    <TD width="97%" bgcolor="#CCCCCC"><DIV align="center"><SPAN style="FONT-FAMILY: 宋体; FONT-SIZE: 11pt"><B> &nbsp; &nbsp;</B></SPAN><STRONG>单片机系统印刷电路板设计<FONT size="2"> 
+        </FONT></STRONG><BR>
+      </DIV></TD>
+    <TD width="1%">&nbsp;</TD>
+  </TR>
+  <TR> 
+    <TD height="85" rowspan="2">&nbsp;</TD>
+    <TD height="762" valign="top" bgcolor="#CCCCCC"><P><FONT size="4">&nbsp;&nbsp;</FONT></P>
+      <P class="MsoNormal"><SPAN style="FONT-FAMILY: 宋体; mso-ascii-font-family: &#39;Times New Roman&#39;; mso-hansi-font-family: &#39;Times New Roman&#39;">&nbsp;&nbsp;&nbsp; 
+        印刷电路板的设计对单片机系统能否抗干扰非常重要。要本着尽量控制噪声源、尽量 减小噪声的传播与藕合、尽量减小噪声的吸收这三大原则设计印制电路板和布线。 
+        <BR>
+        印刷电路板要合理分区，单片机系统通常可分三区，即模拟电路区-(怕干扰)、数字 电路区(既怕干扰又产生干扰)和功率驱动区(干扰源)。 <BR>
+        印制板按单点接电源、单点接地原则送电。三个区域的电源线、地线由该点分三路引 出。噪声元件与非噪声元件要离得远一些。 <BR>
+        ① 把时钟振荡电路、特殊高速逻辑电路部分用地线圈起来，让周围电场趋近于零。<BR>
+        ② ②ν0驱动器件、功率放大器件尽量靠近印制板的边，靠近接插件。 <BR>
+        ③能用低速的器件就不用高速的器件，高速器件只用在关键的地方。 <BR>
+        ④使用满足系统要求的最低频率的时钟，时钟产生器要尽量靠近用到该时钟的器件. <BR>
+        石英晶体振荡器外壳要接地，时钟线要尽量短，且不要引得到处都是。石英振荡器下面、 噪声敏感器件下面要加大地的面积而不应该走其他信号线。时钟线垂直于110线比平行于 
+        I/O线干扰小，时钟线要远离νo线。 </SPAN></P>
+      <P>⑤使用45°的折线布线，不要使用90°折线，以减小高频信号的发射。单面板七 板，电源线、地线要尽量粗ι，信号线的过孔要尽量少。 <BR>
+        ⑥4层板比双面板噪声低20 dBo 6层板比4层板噪声低10 dB。经济条件允许峙 用多层板。 <BR>
+        ⑦关键的线尽量短并要尽量粗，并在两边加上保护地。若将敏感信号和噪声 号通过一条扁带电缆引出的话，要用地线一信号一地线方式引出。 <BR>
+        ③任何信号线都不要形成环路，如不可避免，环路应尽量小。 <BR>
+        ⑨对AID类器件，数字部分与模拟部分宁可绕一下也不要交叉。噪声敏感线 高速线、大电流线平行。 <BR>
+        ⑩单片机及其他IC电路，如有多个电源、地端的话，每端都要加一个去糯 个IC要加一个去藕电容，要选高频信号好的独石电容式瓷片电容作为去糯电容J 
+        容焊在印制电路板上时，引脚要尽量短。用大容量的钮电容或聚脂电容而不用 为电路充电的储能电容。因为电解电容分布电感较大，对高频无效。使用电解 
+        高频特性好的去藕电容成对使用。 <BR>
+        @单片机不用的I/O端口要定义成输出。从高噪声区来的信号要加滤波。继电器<BR>
+        处要加放电二极管。可以用串一个电阻的办法来软化I/O线的跳变沿或提供一定 </P>
+      <P>@需要时，电源线、地线上可加用铜线绕制铁氧体而成的高频扼流器件町 <BR>
+        断高频噪声的传导。弱信号引出线、高频、大功率引出电缆要加屏蔽。引出线 绞起来。 <BR>
+        ⑩印制板过大或信号线频率过高，使得线上的延迟时间大于等于信号上升时 <BR>
+        线要按传输线处理，要加终端匹配电阻。，<BR>
+        @尽量不要使用IC插座，把IC直接焊在印制板上， IC座有较大的分布电容 <BR>
+      </P>
+      <P class="MsoNormal"><SPAN style="FONT-FAMILY: 宋体; mso-ascii-font-family: &#39;Times New Roman&#39;; mso-hansi-font-family: &#39;Times New Roman&#39;"> 
+        </SPAN></P>
+      <P><BR>
+      </P>
+      </TD>
+    <TD rowspan="2">&nbsp;</TD>
+  </TR>
+  <TR> 
+    <TD height="29" valign="bottom" bgcolor="#CCCCCC"> &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 
+      &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 
+      &nbsp; &nbsp; &nbsp; &nbsp;<FONT color="#000066" size="5" face="华文中宋"> <STRONG>www.mcufan.com</STRONG></FONT></TD>
+  </TR>
+  <TR> 
+    <TD>&nbsp;</TD>
+    <TD bgcolor="#CCCCCC">&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 
+      &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 
+      &nbsp; &nbsp; &nbsp; <FONT color="#000066" size="4" face="华文中宋"><STRONG>&nbsp; 
+      &nbsp; &nbsp; &nbsp; 收集、整理</STRONG></FONT></TD>
+    <TD>&nbsp;</TD>
+  </TR>
+</TBODY></TABLE>
+
+
+</BODY></HTML>

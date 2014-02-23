@@ -1,0 +1,5 @@
+Dependencies for Project 'Project', Target 'Release in FLASH': (DO NOT MODIFY !)
+F (.\src\target.c)(0x419EBE44)(-c -cpu ARM7TDMI -g -O1 -D__IN_CHIP -DEN_CRP -o ".\Release_in_FLASH\target.o")
+F (.\src\IRQ.s)(0x41675146)(-cpu ARM7TDMI -g -PD "__IN_CHIP SETA 1" -PD "EN_CRP SETA 1" -list -xref -o .\Release_in_FLASH\IRQ.o)
+F (.\src\Startup.s)(0x4167A314)(-cpu ARM7TDMI -g -PD "__IN_CHIP SETA 1" -PD "EN_CRP SETA 1" -list -xref -o .\Release_in_FLASH\Startup.o)
+F (.\Blinky.c)(0x482E9E5A)(-c -cpu ARM7TDMI -g -O1 -D__IN_CHIP -DEN_CRP -o ".\Release_in_FLASH\blinky.o")

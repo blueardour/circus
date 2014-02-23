@@ -1,0 +1,26 @@
+*** Creating Trace Output File '.\debug_in_RAM\Project.tra' Ok.
+### Preparing for ADS-LD.
+### Creating ADS-LD Command Line
+### List of Objects: adding '".\debug_in_ram\target.o"'
+### List of Objects: adding '".\debug_in_ram\irq.o"'
+### List of Objects: adding '".\debug_in_ram\startup.o"'
+### List of Objects: adding '".\debug_in_ram\spi.o"'
+### List of Objects: adding '".\debug_in_ram\lcd.o"'
+### List of Objects: adding '".\debug_in_ram\key.o"'
+### List of Objects: adding '".\debug_in_ram\delay.o"'
+### List of Objects: adding '".\debug_in_ram\main.o"'
+### ADS-LD Command completed:
+".\debug_in_ram\target.o" ".\debug_in_ram\irq.o" ".\debug_in_ram\startup.o" ".\debug_in_ram\spi.o" ".\debug_in_ram\lcd.o" ".\debug_in_ram\key.o" ".\debug_in_ram\delay.o" ".\debug_in_ram\main.o" -strict -scatter ".\src\mem_b.scf" 
+-entry 0x40000000 -map -xref -callgraph -symbols 
+-info sizes -info totals -info unused -info veneers 
+ -list ".\debug_in_RAM\Project.map" -o ".\debug_in_RAM\Project.axf"### Preparing Environment (PrepEnvAds)
+### ADS-LD Output File: '.\debug_in_RAM\Project.axf'
+### ADS-LD Command File: '.\debug_in_RAM\Project.lnp'
+### Checking for dirty Components...
+### Creating CmdFile '.\debug_in_RAM\Project.lnp', Handle=0x00000314
+### Writing '.lnp' file
+### ADS-LD Command file '.\debug_in_RAM\Project.lnp' is ready.
+### ADS-LD: About to start ADS-LD Thread.
+### ADS-LD: executed with 0 errors
+### Updating obj list
+### LDADS_file() completed.

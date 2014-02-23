@@ -1,0 +1,4 @@
+".\debug_in_flash\target.o" ".\debug_in_flash\irq.o" ".\debug_in_flash\startup.o" ".\debug_in_flash\spi.o" ".\debug_in_flash\lcd.o" ".\debug_in_flash\key.o" ".\debug_in_flash\main.o" -strict -scatter ".\src\mem_c.scf" 
+-entry 0x00000000 -map -xref -callgraph -symbols 
+-info sizes -info totals -info unused -info veneers 
+ -list ".\Project.map" -o ".\debug_in_FLASH\Project.axf"

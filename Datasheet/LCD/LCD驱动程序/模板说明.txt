@@ -1,0 +1,36 @@
+
+ /* 使用说明 */
+
+	将工程模板文件夹拷贝到目标目录，将文件夹更名为您自己名称，
+	进入进入文件夹，打开模板为您建立好的工程project.uv2。
+	将您的源文件拷贝到src文件夹下，在Keil环境中，添加您的源文件。
+	在工程目标栏，选择您的生成目标即可进行调试/下载。
+
+/* 参数设置说明 */
+	1．	Simulator
+	用于模拟仿真。
+	l	入口地址：0x40000000
+	l	初始化文件：debug_in_ram.ini
+
+	2．	Debug in RAM
+	在RAM调试。
+	l	入口地址：0x40000000
+	l	分散加载文件：无
+	l	初始化文件：debug_in_ram.ini
+	l	宏定义：__DEBUG_RAM
+
+	3．	Debug in FLASH
+	在FLASH调试。
+	l	入口地址：0x00000000
+	l	分散加载文件：mem_c.scf
+	l	初始化文件：无
+	l	宏定义：__DEBUG_FLASH
+
+	4．	Release in FLASH
+	FLASH发布版，同时加密，不能调试。
+	l	入口地址：0x00000000
+	l	分散加载文件：mem_c.scf
+	l	初始化文件：无
+	l	宏定义：__IN_CHIP    EN_CRP
+
+                                    西安博控电子科技有限公司

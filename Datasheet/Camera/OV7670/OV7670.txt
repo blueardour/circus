@@ -1,0 +1,1303 @@
+
+Linux kernel & device driver programming
+Cross-Referenced Linux and Device Driver Code
+
+[ source navigation ] [ diff markup ] [ identifier search ] [ freetext search ] [ file search ]
+Version: [ 2.6.11.8 ] [ 2.6.25 ] [ 2.6.25.8 ] [ 2.6.31.13 ] Architecture: [ i386 ]
+  1 /*
+  2  * A V4L2 driver for OmniVision OV7670 cameras.
+  3  *
+  4  * Copyright 2006 One Laptop Per Child Association, Inc.  Written
+  5  * by Jonathan Corbet with substantial inspiration from Mark
+  6  * McClelland's ovcamchip code.
+  7  *
+  8  * Copyright 2006-7 Jonathan Corbet <corbet@lwn.net>
+  9  *
+ 10  * This file may be distributed under the terms of the GNU General
+ 11  * Public License, version 2.
+ 12  */
+ 13 #include <linux/init.h>
+ 14 #include <linux/module.h>
+ 15 #include <linux/i2c.h>
+ 16 #include <linux/delay.h>
+ 17 #include <linux/videodev2.h>
+ 18 #include <media/v4l2-device.h>
+ 19 #include <media/v4l2-chip-ident.h>
+ 20 #include <media/v4l2-i2c-drv.h>
+ 21 
+ 22 
+ 23 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
+ 24 MODULE_DESCRIPTION("A low-level driver for OmniVision ov7670 sensors");
+ 25 MODULE_LICENSE("GPL");
+ 26 
+ 27 static int debug;
+ 28 module_param(debug, bool, 0644);
+ 29 MODULE_PARM_DESC(debug, "Debug level (0-1)");
+ 30 
+ 31 /*
+ 32  * Basic window sizes.  These probably belong somewhere more globally
+ 33  * useful.
+ 34  */
+ 35 #define VGA_WIDTH       640
+ 36 #define VGA_HEIGHT      480
+ 37 #define QVGA_WIDTH      320
+ 38 #define QVGA_HEIGHT     240
+ 39 #define CIF_WIDTH       352
+ 40 #define CIF_HEIGHT      288
+ 41 #define QCIF_WIDTH      176
+ 42 #define QCIF_HEIGHT     144
+ 43 
+ 44 /*
+ 45  * Our nominal (default) frame rate.
+ 46  */
+ 47 #define OV7670_FRAME_RATE 30
+ 48 
+ 49 /*
+ 50  * The 7670 sits on i2c with ID 0x42
+ 51  */
+ 52 #define OV7670_I2C_ADDR 0x42
+ 53 
+ 54 /* Registers */
+ 55 #define REG_GAIN        0x00    /* Gain lower 8 bits (rest in vref) */
+ 56 #define REG_BLUE        0x01    /* blue gain */
+ 57 #define REG_RED         0x02    /* red gain */
+ 58 #define REG_VREF        0x03    /* Pieces of GAIN, VSTART, VSTOP */
+ 59 #define REG_COM1        0x04    /* Control 1 */
+ 60 #define  COM1_CCIR656     0x40  /* CCIR656 enable */
+ 61 #define REG_BAVE        0x05    /* U/B Average level */
+ 62 #define REG_GbAVE       0x06    /* Y/Gb Average level */
+ 63 #define REG_AECHH       0x07    /* AEC MS 5 bits */
+ 64 #define REG_RAVE        0x08    /* V/R Average level */
+ 65 #define REG_COM2        0x09    /* Control 2 */
+ 66 #define  COM2_SSLEEP      0x10  /* Soft sleep mode */
+ 67 #define REG_PID         0x0a    /* Product ID MSB */
+ 68 #define REG_VER         0x0b    /* Product ID LSB */
+ 69 #define REG_COM3        0x0c    /* Control 3 */
+ 70 #define  COM3_SWAP        0x40    /* Byte swap */
+ 71 #define  COM3_SCALEEN     0x08    /* Enable scaling */
+ 72 #define  COM3_DCWEN       0x04    /* Enable downsamp/crop/window */
+ 73 #define REG_COM4        0x0d    /* Control 4 */
+ 74 #define REG_COM5        0x0e    /* All "reserved" */
+ 75 #define REG_COM6        0x0f    /* Control 6 */
+ 76 #define REG_AECH        0x10    /* More bits of AEC value */
+ 77 #define REG_CLKRC       0x11    /* Clocl control */
+ 78 #define   CLK_EXT         0x40    /* Use external clock directly */
+ 79 #define   CLK_SCALE       0x3f    /* Mask for internal clock scale */
+ 80 #define REG_COM7        0x12    /* Control 7 */
+ 81 #define   COM7_RESET      0x80    /* Register reset */
+ 82 #define   COM7_FMT_MASK   0x38
+ 83 #define   COM7_FMT_VGA    0x00
+ 84 #define   COM7_FMT_CIF    0x20    /* CIF format */
+ 85 #define   COM7_FMT_QVGA   0x10    /* QVGA format */
+ 86 #define   COM7_FMT_QCIF   0x08    /* QCIF format */
+ 87 #define   COM7_RGB        0x04    /* bits 0 and 2 - RGB format */
+ 88 #define   COM7_YUV        0x00    /* YUV */
+ 89 #define   COM7_BAYER      0x01    /* Bayer format */
+ 90 #define   COM7_PBAYER     0x05    /* "Processed bayer" */
+ 91 #define REG_COM8        0x13    /* Control 8 */
+ 92 #define   COM8_FASTAEC    0x80    /* Enable fast AGC/AEC */
+ 93 #define   COM8_AECSTEP    0x40    /* Unlimited AEC step size */
+ 94 #define   COM8_BFILT      0x20    /* Band filter enable */
+ 95 #define   COM8_AGC        0x04    /* Auto gain enable */
+ 96 #define   COM8_AWB        0x02    /* White balance enable */
+ 97 #define   COM8_AEC        0x01    /* Auto exposure enable */
+ 98 #define REG_COM9        0x14    /* Control 9  - gain ceiling */
+ 99 #define REG_COM10       0x15    /* Control 10 */
+100 #define   COM10_HSYNC     0x40    /* HSYNC instead of HREF */
+101 #define   COM10_PCLK_HB   0x20    /* Suppress PCLK on horiz blank */
+102 #define   COM10_HREF_REV  0x08    /* Reverse HREF */
+103 #define   COM10_VS_LEAD   0x04    /* VSYNC on clock leading edge */
+104 #define   COM10_VS_NEG    0x02    /* VSYNC negative */
+105 #define   COM10_HS_NEG    0x01    /* HSYNC negative */
+106 #define REG_HSTART      0x17    /* Horiz start high bits */
+107 #define REG_HSTOP       0x18    /* Horiz stop high bits */
+108 #define REG_VSTART      0x19    /* Vert start high bits */
+109 #define REG_VSTOP       0x1a    /* Vert stop high bits */
+110 #define REG_PSHFT       0x1b    /* Pixel delay after HREF */
+111 #define REG_MIDH        0x1c    /* Manuf. ID high */
+112 #define REG_MIDL        0x1d    /* Manuf. ID low */
+113 #define REG_MVFP        0x1e    /* Mirror / vflip */
+114 #define   MVFP_MIRROR     0x20    /* Mirror image */
+115 #define   MVFP_FLIP       0x10    /* Vertical flip */
+116 
+117 #define REG_AEW         0x24    /* AGC upper limit */
+118 #define REG_AEB         0x25    /* AGC lower limit */
+119 #define REG_VPT         0x26    /* AGC/AEC fast mode op region */
+120 #define REG_HSYST       0x30    /* HSYNC rising edge delay */
+121 #define REG_HSYEN       0x31    /* HSYNC falling edge delay */
+122 #define REG_HREF        0x32    /* HREF pieces */
+123 #define REG_TSLB        0x3a    /* lots of stuff */
+124 #define   TSLB_YLAST      0x04    /* UYVY or VYUY - see com13 */
+125 #define REG_COM11       0x3b    /* Control 11 */
+126 #define   COM11_NIGHT     0x80    /* NIght mode enable */
+127 #define   COM11_NMFR      0x60    /* Two bit NM frame rate */
+128 #define   COM11_HZAUTO    0x10    /* Auto detect 50/60 Hz */
+129 #define   COM11_50HZ      0x08    /* Manual 50Hz select */
+130 #define   COM11_EXP       0x02
+131 #define REG_COM12       0x3c    /* Control 12 */
+132 #define   COM12_HREF      0x80    /* HREF always */
+133 #define REG_COM13       0x3d    /* Control 13 */
+134 #define   COM13_GAMMA     0x80    /* Gamma enable */
+135 #define   COM13_UVSAT     0x40    /* UV saturation auto adjustment */
+136 #define   COM13_UVSWAP    0x01    /* V before U - w/TSLB */
+137 #define REG_COM14       0x3e    /* Control 14 */
+138 #define   COM14_DCWEN     0x10    /* DCW/PCLK-scale enable */
+139 #define REG_EDGE        0x3f    /* Edge enhancement factor */
+140 #define REG_COM15       0x40    /* Control 15 */
+141 #define   COM15_R10F0     0x00    /* Data range 10 to F0 */
+142 #define   COM15_R01FE     0x80    /*            01 to FE */
+143 #define   COM15_R00FF     0xc0    /*            00 to FF */
+144 #define   COM15_RGB565    0x10    /* RGB565 output */
+145 #define   COM15_RGB555    0x30    /* RGB555 output */
+146 #define REG_COM16       0x41    /* Control 16 */
+147 #define   COM16_AWBGAIN   0x08    /* AWB gain enable */
+148 #define REG_COM17       0x42    /* Control 17 */
+149 #define   COM17_AECWIN    0xc0    /* AEC window - must match COM4 */
+150 #define   COM17_CBAR      0x08    /* DSP Color bar */
+151 
+152 /*
+153  * This matrix defines how the colors are generated, must be
+154  * tweaked to adjust hue and saturation.
+155  *
+156  * Order: v-red, v-green, v-blue, u-red, u-green, u-blue
+157  *
+158  * They are nine-bit signed quantities, with the sign bit
+159  * stored in 0x58.  Sign for v-red is bit 0, and up from there.
+160  */
+161 #define REG_CMATRIX_BASE 0x4f
+162 #define   CMATRIX_LEN 6
+163 #define REG_CMATRIX_SIGN 0x58
+164 
+165 
+166 #define REG_BRIGHT      0x55    /* Brightness */
+167 #define REG_CONTRAS     0x56    /* Contrast control */
+168 
+169 #define REG_GFIX        0x69    /* Fix gain control */
+170 
+171 #define REG_REG76       0x76    /* OV's name */
+172 #define   R76_BLKPCOR     0x80    /* Black pixel correction enable */
+173 #define   R76_WHTPCOR     0x40    /* White pixel correction enable */
+174 
+175 #define REG_RGB444      0x8c    /* RGB 444 control */
+176 #define   R444_ENABLE     0x02    /* Turn on RGB444, overrides 5x5 */
+177 #define   R444_RGBX       0x01    /* Empty nibble at end */
+178 
+179 #define REG_HAECC1      0x9f    /* Hist AEC/AGC control 1 */
+180 #define REG_HAECC2      0xa0    /* Hist AEC/AGC control 2 */
+181 
+182 #define REG_BD50MAX     0xa5    /* 50hz banding step limit */
+183 #define REG_HAECC3      0xa6    /* Hist AEC/AGC control 3 */
+184 #define REG_HAECC4      0xa7    /* Hist AEC/AGC control 4 */
+185 #define REG_HAECC5      0xa8    /* Hist AEC/AGC control 5 */
+186 #define REG_HAECC6      0xa9    /* Hist AEC/AGC control 6 */
+187 #define REG_HAECC7      0xaa    /* Hist AEC/AGC control 7 */
+188 #define REG_BD60MAX     0xab    /* 60hz banding step limit */
+189 
+190 
+191 /*
+192  * Information we maintain about a known sensor.
+193  */
+194 struct ov7670_format_struct;  /* coming later */
+195 struct ov7670_info {
+196         struct v4l2_subdev sd;
+197         struct ov7670_format_struct *fmt;  /* Current format */
+198         unsigned char sat;              /* Saturation value */
+199         int hue;                        /* Hue value */
+200 };
+201 
+202 static inline struct ov7670_info *to_state(struct v4l2_subdev *sd)
+203 {
+204         return container_of(sd, struct ov7670_info, sd);
+205 }
+206 
+207 
+208 
+209 /*
+210  * The default register settings, as obtained from OmniVision.  There
+211  * is really no making sense of most of these - lots of "reserved" values
+212  * and such.
+213  *
+214  * These settings give VGA YUYV.
+215  */
+216 
+217 struct regval_list {
+218         unsigned char reg_num;
+219         unsigned char value;
+220 };
+221 
+222 static struct regval_list ov7670_default_regs[] = {
+223         { REG_COM7, COM7_RESET },
+224 /*
+225  * Clock scale: 3 = 15fps
+226  *              2 = 20fps
+227  *              1 = 30fps
+228  */
+229         { REG_CLKRC, 0x1 },     /* OV: clock scale (30 fps) */
+230         { REG_TSLB,  0x04 },    /* OV */
+231         { REG_COM7, 0 },        /* VGA */
+232         /*
+233          * Set the hardware window.  These values from OV don't entirely
+234          * make sense - hstop is less than hstart.  But they work...
+235          */
+236         { REG_HSTART, 0x13 },   { REG_HSTOP, 0x01 },
+237         { REG_HREF, 0xb6 },     { REG_VSTART, 0x02 },
+238         { REG_VSTOP, 0x7a },    { REG_VREF, 0x0a },
+239 
+240         { REG_COM3, 0 },        { REG_COM14, 0 },
+241         /* Mystery scaling numbers */
+242         { 0x70, 0x3a },         { 0x71, 0x35 },
+243         { 0x72, 0x11 },         { 0x73, 0xf0 },
+244         { 0xa2, 0x02 },         { REG_COM10, 0x0 },
+245 
+246         /* Gamma curve values */
+247         { 0x7a, 0x20 },         { 0x7b, 0x10 },
+248         { 0x7c, 0x1e },         { 0x7d, 0x35 },
+249         { 0x7e, 0x5a },         { 0x7f, 0x69 },
+250         { 0x80, 0x76 },         { 0x81, 0x80 },
+251         { 0x82, 0x88 },         { 0x83, 0x8f },
+252         { 0x84, 0x96 },         { 0x85, 0xa3 },
+253         { 0x86, 0xaf },         { 0x87, 0xc4 },
+254         { 0x88, 0xd7 },         { 0x89, 0xe8 },
+255 
+256         /* AGC and AEC parameters.  Note we start by disabling those features,
+257            then turn them only after tweaking the values. */
+258         { REG_COM8, COM8_FASTAEC | COM8_AECSTEP | COM8_BFILT },
+259         { REG_GAIN, 0 },        { REG_AECH, 0 },
+260         { REG_COM4, 0x40 }, /* magic reserved bit */
+261         { REG_COM9, 0x18 }, /* 4x gain + magic rsvd bit */
+262         { REG_BD50MAX, 0x05 },  { REG_BD60MAX, 0x07 },
+263         { REG_AEW, 0x95 },      { REG_AEB, 0x33 },
+264         { REG_VPT, 0xe3 },      { REG_HAECC1, 0x78 },
+265         { REG_HAECC2, 0x68 },   { 0xa1, 0x03 }, /* magic */
+266         { REG_HAECC3, 0xd8 },   { REG_HAECC4, 0xd8 },
+267         { REG_HAECC5, 0xf0 },   { REG_HAECC6, 0x90 },
+268         { REG_HAECC7, 0x94 },
+269         { REG_COM8, COM8_FASTAEC|COM8_AECSTEP|COM8_BFILT|COM8_AGC|COM8_AEC },
+270 
+271         /* Almost all of these are magic "reserved" values.  */
+272         { REG_COM5, 0x61 },     { REG_COM6, 0x4b },
+273         { 0x16, 0x02 },         { REG_MVFP, 0x07 },
+274         { 0x21, 0x02 },         { 0x22, 0x91 },
+275         { 0x29, 0x07 },         { 0x33, 0x0b },
+276         { 0x35, 0x0b },         { 0x37, 0x1d },
+277         { 0x38, 0x71 },         { 0x39, 0x2a },
+278         { REG_COM12, 0x78 },    { 0x4d, 0x40 },
+279         { 0x4e, 0x20 },         { REG_GFIX, 0 },
+280         { 0x6b, 0x4a },         { 0x74, 0x10 },
+281         { 0x8d, 0x4f },         { 0x8e, 0 },
+282         { 0x8f, 0 },            { 0x90, 0 },
+283         { 0x91, 0 },            { 0x96, 0 },
+284         { 0x9a, 0 },            { 0xb0, 0x84 },
+285         { 0xb1, 0x0c },         { 0xb2, 0x0e },
+286         { 0xb3, 0x82 },         { 0xb8, 0x0a },
+287 
+288         /* More reserved magic, some of which tweaks white balance */
+289         { 0x43, 0x0a },         { 0x44, 0xf0 },
+290         { 0x45, 0x34 },         { 0x46, 0x58 },
+291         { 0x47, 0x28 },         { 0x48, 0x3a },
+292         { 0x59, 0x88 },         { 0x5a, 0x88 },
+293         { 0x5b, 0x44 },         { 0x5c, 0x67 },
+294         { 0x5d, 0x49 },         { 0x5e, 0x0e },
+295         { 0x6c, 0x0a },         { 0x6d, 0x55 },
+296         { 0x6e, 0x11 },         { 0x6f, 0x9f }, /* "9e for advance AWB" */
+297         { 0x6a, 0x40 },         { REG_BLUE, 0x40 },
+298         { REG_RED, 0x60 },
+299         { REG_COM8, COM8_FASTAEC|COM8_AECSTEP|COM8_BFILT|COM8_AGC|COM8_AEC|COM8_AWB },
+300 
+301         /* Matrix coefficients */
+302         { 0x4f, 0x80 },         { 0x50, 0x80 },
+303         { 0x51, 0 },            { 0x52, 0x22 },
+304         { 0x53, 0x5e },         { 0x54, 0x80 },
+305         { 0x58, 0x9e },
+306 
+307         { REG_COM16, COM16_AWBGAIN },   { REG_EDGE, 0 },
+308         { 0x75, 0x05 },         { 0x76, 0xe1 },
+309         { 0x4c, 0 },            { 0x77, 0x01 },
+310         { REG_COM13, 0xc3 },    { 0x4b, 0x09 },
+311         { 0xc9, 0x60 },         { REG_COM16, 0x38 },
+312         { 0x56, 0x40 },
+313 
+314         { 0x34, 0x11 },         { REG_COM11, COM11_EXP|COM11_HZAUTO },
+315         { 0xa4, 0x88 },         { 0x96, 0 },
+316         { 0x97, 0x30 },         { 0x98, 0x20 },
+317         { 0x99, 0x30 },         { 0x9a, 0x84 },
+318         { 0x9b, 0x29 },         { 0x9c, 0x03 },
+319         { 0x9d, 0x4c },         { 0x9e, 0x3f },
+320         { 0x78, 0x04 },
+321 
+322         /* Extra-weird stuff.  Some sort of multiplexor register */
+323         { 0x79, 0x01 },         { 0xc8, 0xf0 },
+324         { 0x79, 0x0f },         { 0xc8, 0x00 },
+325         { 0x79, 0x10 },         { 0xc8, 0x7e },
+326         { 0x79, 0x0a },         { 0xc8, 0x80 },
+327         { 0x79, 0x0b },         { 0xc8, 0x01 },
+328         { 0x79, 0x0c },         { 0xc8, 0x0f },
+329         { 0x79, 0x0d },         { 0xc8, 0x20 },
+330         { 0x79, 0x09 },         { 0xc8, 0x80 },
+331         { 0x79, 0x02 },         { 0xc8, 0xc0 },
+332         { 0x79, 0x03 },         { 0xc8, 0x40 },
+333         { 0x79, 0x05 },         { 0xc8, 0x30 },
+334         { 0x79, 0x26 },
+335 
+336         { 0xff, 0xff }, /* END MARKER */
+337 };
+338 
+339 
+340 /*
+341  * Here we'll try to encapsulate the changes for just the output
+342  * video format.
+343  *
+344  * RGB656 and YUV422 come from OV; RGB444 is homebrewed.
+345  *
+346  * IMPORTANT RULE: the first entry must be for COM7, see ov7670_s_fmt for why.
+347  */
+348 
+349 
+350 static struct regval_list ov7670_fmt_yuv422[] = {
+351         { REG_COM7, 0x0 },  /* Selects YUV mode */
+352         { REG_RGB444, 0 },      /* No RGB444 please */
+353         { REG_COM1, 0 },
+354         { REG_COM15, COM15_R00FF },
+355         { REG_COM9, 0x18 }, /* 4x gain ceiling; 0x8 is reserved bit */
+356         { 0x4f, 0x80 },         /* "matrix coefficient 1" */
+357         { 0x50, 0x80 },         /* "matrix coefficient 2" */
+358         { 0x51, 0    },         /* vb */
+359         { 0x52, 0x22 },         /* "matrix coefficient 4" */
+360         { 0x53, 0x5e },         /* "matrix coefficient 5" */
+361         { 0x54, 0x80 },         /* "matrix coefficient 6" */
+362         { REG_COM13, COM13_GAMMA|COM13_UVSAT },
+363         { 0xff, 0xff },
+364 };
+365 
+366 static struct regval_list ov7670_fmt_rgb565[] = {
+367         { REG_COM7, COM7_RGB }, /* Selects RGB mode */
+368         { REG_RGB444, 0 },      /* No RGB444 please */
+369         { REG_COM1, 0x0 },
+370         { REG_COM15, COM15_RGB565 },
+371         { REG_COM9, 0x38 },     /* 16x gain ceiling; 0x8 is reserved bit */
+372         { 0x4f, 0xb3 },         /* "matrix coefficient 1" */
+373         { 0x50, 0xb3 },         /* "matrix coefficient 2" */
+374         { 0x51, 0    },         /* vb */
+375         { 0x52, 0x3d },         /* "matrix coefficient 4" */
+376         { 0x53, 0xa7 },         /* "matrix coefficient 5" */
+377         { 0x54, 0xe4 },         /* "matrix coefficient 6" */
+378         { REG_COM13, COM13_GAMMA|COM13_UVSAT },
+379         { 0xff, 0xff },
+380 };
+381 
+382 static struct regval_list ov7670_fmt_rgb444[] = {
+383         { REG_COM7, COM7_RGB }, /* Selects RGB mode */
+384         { REG_RGB444, R444_ENABLE },    /* Enable xxxxrrrr ggggbbbb */
+385         { REG_COM1, 0x40 },     /* Magic reserved bit */
+386         { REG_COM15, COM15_R01FE|COM15_RGB565 }, /* Data range needed? */
+387         { REG_COM9, 0x38 },     /* 16x gain ceiling; 0x8 is reserved bit */
+388         { 0x4f, 0xb3 },         /* "matrix coefficient 1" */
+389         { 0x50, 0xb3 },         /* "matrix coefficient 2" */
+390         { 0x51, 0    },         /* vb */
+391         { 0x52, 0x3d },         /* "matrix coefficient 4" */
+392         { 0x53, 0xa7 },         /* "matrix coefficient 5" */
+393         { 0x54, 0xe4 },         /* "matrix coefficient 6" */
+394         { REG_COM13, COM13_GAMMA|COM13_UVSAT|0x2 },  /* Magic rsvd bit */
+395         { 0xff, 0xff },
+396 };
+397 
+398 static struct regval_list ov7670_fmt_raw[] = {
+399         { REG_COM7, COM7_BAYER },
+400         { REG_COM13, 0x08 }, /* No gamma, magic rsvd bit */
+401         { REG_COM16, 0x3d }, /* Edge enhancement, denoise */
+402         { REG_REG76, 0xe1 }, /* Pix correction, magic rsvd */
+403         { 0xff, 0xff },
+404 };
+405 
+406 
+407 
+408 /*
+409  * Low-level register I/O.
+410  */
+411 
+412 static int ov7670_read(struct v4l2_subdev *sd, unsigned char reg,
+413                 unsigned char *value)
+414 {
+415         struct i2c_client *client = v4l2_get_subdevdata(sd);
+416         int ret;
+417 
+418         ret = i2c_smbus_read_byte_data(client, reg);
+419         if (ret >= 0) {
+420                 *value = (unsigned char)ret;
+421                 ret = 0;
+422         }
+423         return ret;
+424 }
+425 
+426 
+427 static int ov7670_write(struct v4l2_subdev *sd, unsigned char reg,
+428                 unsigned char value)
+429 {
+430         struct i2c_client *client = v4l2_get_subdevdata(sd);
+431         int ret = i2c_smbus_write_byte_data(client, reg, value);
+432 
+433         if (reg == REG_COM7 && (value & COM7_RESET))
+434                 msleep(2);  /* Wait for reset to run */
+435         return ret;
+436 }
+437 
+438 
+439 /*
+440  * Write a list of register settings; ff/ff stops the process.
+441  */
+442 static int ov7670_write_array(struct v4l2_subdev *sd, struct regval_list *vals)
+443 {
+444         while (vals->reg_num != 0xff || vals->value != 0xff) {
+445                 int ret = ov7670_write(sd, vals->reg_num, vals->value);
+446                 if (ret < 0)
+447                         return ret;
+448                 vals++;
+449         }
+450         return 0;
+451 }
+452 
+453 
+454 /*
+455  * Stuff that knows about the sensor.
+456  */
+457 static int ov7670_reset(struct v4l2_subdev *sd, u32 val)
+458 {
+459         ov7670_write(sd, REG_COM7, COM7_RESET);
+460         msleep(1);
+461         return 0;
+462 }
+463 
+464 
+465 static int ov7670_init(struct v4l2_subdev *sd, u32 val)
+466 {
+467         return ov7670_write_array(sd, ov7670_default_regs);
+468 }
+469 
+470 
+471 
+472 static int ov7670_detect(struct v4l2_subdev *sd)
+473 {
+474         unsigned char v;
+475         int ret;
+476 
+477         ret = ov7670_init(sd, 0);
+478         if (ret < 0)
+479                 return ret;
+480         ret = ov7670_read(sd, REG_MIDH, &v);
+481         if (ret < 0)
+482                 return ret;
+483         if (v != 0x7f) /* OV manuf. id. */
+484                 return -ENODEV;
+485         ret = ov7670_read(sd, REG_MIDL, &v);
+486         if (ret < 0)
+487                 return ret;
+488         if (v != 0xa2)
+489                 return -ENODEV;
+490         /*
+491          * OK, we know we have an OmniVision chip...but which one?
+492          */
+493         ret = ov7670_read(sd, REG_PID, &v);
+494         if (ret < 0)
+495                 return ret;
+496         if (v != 0x76)  /* PID + VER = 0x76 / 0x73 */
+497                 return -ENODEV;
+498         ret = ov7670_read(sd, REG_VER, &v);
+499         if (ret < 0)
+500                 return ret;
+501         if (v != 0x73)  /* PID + VER = 0x76 / 0x73 */
+502                 return -ENODEV;
+503         return 0;
+504 }
+505 
+506 
+507 /*
+508  * Store information about the video data format.  The color matrix
+509  * is deeply tied into the format, so keep the relevant values here.
+510  * The magic matrix nubmers come from OmniVision.
+511  */
+512 static struct ov7670_format_struct {
+513         __u8 *desc;
+514         __u32 pixelformat;
+515         struct regval_list *regs;
+516         int cmatrix[CMATRIX_LEN];
+517         int bpp;   /* Bytes per pixel */
+518 } ov7670_formats[] = {
+519         {
+520                 .desc           = "YUYV 4:2:2",
+521                 .pixelformat    = V4L2_PIX_FMT_YUYV,
+522                 .regs           = ov7670_fmt_yuv422,
+523                 .cmatrix        = { 128, -128, 0, -34, -94, 128 },
+524                 .bpp            = 2,
+525         },
+526         {
+527                 .desc           = "RGB 444",
+528                 .pixelformat    = V4L2_PIX_FMT_RGB444,
+529                 .regs           = ov7670_fmt_rgb444,
+530                 .cmatrix        = { 179, -179, 0, -61, -176, 228 },
+531                 .bpp            = 2,
+532         },
+533         {
+534                 .desc           = "RGB 565",
+535                 .pixelformat    = V4L2_PIX_FMT_RGB565,
+536                 .regs           = ov7670_fmt_rgb565,
+537                 .cmatrix        = { 179, -179, 0, -61, -176, 228 },
+538                 .bpp            = 2,
+539         },
+540         {
+541                 .desc           = "Raw RGB Bayer",
+542                 .pixelformat    = V4L2_PIX_FMT_SBGGR8,
+543                 .regs           = ov7670_fmt_raw,
+544                 .cmatrix        = { 0, 0, 0, 0, 0, 0 },
+545                 .bpp            = 1
+546         },
+547 };
+548 #define N_OV7670_FMTS ARRAY_SIZE(ov7670_formats)
+549 
+550 
+551 /*
+552  * Then there is the issue of window sizes.  Try to capture the info here.
+553  */
+554 
+555 /*
+556  * QCIF mode is done (by OV) in a very strange way - it actually looks like
+557  * VGA with weird scaling options - they do *not* use the canned QCIF mode
+558  * which is allegedly provided by the sensor.  So here's the weird register
+559  * settings.
+560  */
+561 static struct regval_list ov7670_qcif_regs[] = {
+562         { REG_COM3, COM3_SCALEEN|COM3_DCWEN },
+563         { REG_COM3, COM3_DCWEN },
+564         { REG_COM14, COM14_DCWEN | 0x01},
+565         { 0x73, 0xf1 },
+566         { 0xa2, 0x52 },
+567         { 0x7b, 0x1c },
+568         { 0x7c, 0x28 },
+569         { 0x7d, 0x3c },
+570         { 0x7f, 0x69 },
+571         { REG_COM9, 0x38 },
+572         { 0xa1, 0x0b },
+573         { 0x74, 0x19 },
+574         { 0x9a, 0x80 },
+575         { 0x43, 0x14 },
+576         { REG_COM13, 0xc0 },
+577         { 0xff, 0xff },
+578 };
+579 
+580 static struct ov7670_win_size {
+581         int     width;
+582         int     height;
+583         unsigned char com7_bit;
+584         int     hstart;         /* Start/stop values for the camera.  Note */
+585         int     hstop;          /* that they do not always make complete */
+586         int     vstart;         /* sense to humans, but evidently the sensor */
+587         int     vstop;          /* will do the right thing... */
+588         struct regval_list *regs; /* Regs to tweak */
+589 /* h/vref stuff */
+590 } ov7670_win_sizes[] = {
+591         /* VGA */
+592         {
+593                 .width          = VGA_WIDTH,
+594                 .height         = VGA_HEIGHT,
+595                 .com7_bit       = COM7_FMT_VGA,
+596                 .hstart         = 158,          /* These values from */
+597                 .hstop          =  14,          /* Omnivision */
+598                 .vstart         =  10,
+599                 .vstop          = 490,
+600                 .regs           = NULL,
+601         },
+602         /* CIF */
+603         {
+604                 .width          = CIF_WIDTH,
+605                 .height         = CIF_HEIGHT,
+606                 .com7_bit       = COM7_FMT_CIF,
+607                 .hstart         = 170,          /* Empirically determined */
+608                 .hstop          =  90,
+609                 .vstart         =  14,
+610                 .vstop          = 494,
+611                 .regs           = NULL,
+612         },
+613         /* QVGA */
+614         {
+615                 .width          = QVGA_WIDTH,
+616                 .height         = QVGA_HEIGHT,
+617                 .com7_bit       = COM7_FMT_QVGA,
+618                 .hstart         = 164,          /* Empirically determined */
+619                 .hstop          =  20,
+620                 .vstart         =  14,
+621                 .vstop          = 494,
+622                 .regs           = NULL,
+623         },
+624         /* QCIF */
+625         {
+626                 .width          = QCIF_WIDTH,
+627                 .height         = QCIF_HEIGHT,
+628                 .com7_bit       = COM7_FMT_VGA, /* see comment above */
+629                 .hstart         = 456,          /* Empirically determined */
+630                 .hstop          =  24,
+631                 .vstart         =  14,
+632                 .vstop          = 494,
+633                 .regs           = ov7670_qcif_regs,
+634         },
+635 };
+636 
+637 #define N_WIN_SIZES (ARRAY_SIZE(ov7670_win_sizes))
+638 
+639 
+640 /*
+641  * Store a set of start/stop values into the camera.
+642  */
+643 static int ov7670_set_hw(struct v4l2_subdev *sd, int hstart, int hstop,
+644                 int vstart, int vstop)
+645 {
+646         int ret;
+647         unsigned char v;
+648 /*
+649  * Horizontal: 11 bits, top 8 live in hstart and hstop.  Bottom 3 of
+650  * hstart are in href[2:0], bottom 3 of hstop in href[5:3].  There is
+651  * a mystery "edge offset" value in the top two bits of href.
+652  */
+653         ret =  ov7670_write(sd, REG_HSTART, (hstart >> 3) & 0xff);
+654         ret += ov7670_write(sd, REG_HSTOP, (hstop >> 3) & 0xff);
+655         ret += ov7670_read(sd, REG_HREF, &v);
+656         v = (v & 0xc0) | ((hstop & 0x7) << 3) | (hstart & 0x7);
+657         msleep(10);
+658         ret += ov7670_write(sd, REG_HREF, v);
+659 /*
+660  * Vertical: similar arrangement, but only 10 bits.
+661  */
+662         ret += ov7670_write(sd, REG_VSTART, (vstart >> 2) & 0xff);
+663         ret += ov7670_write(sd, REG_VSTOP, (vstop >> 2) & 0xff);
+664         ret += ov7670_read(sd, REG_VREF, &v);
+665         v = (v & 0xf0) | ((vstop & 0x3) << 2) | (vstart & 0x3);
+666         msleep(10);
+667         ret += ov7670_write(sd, REG_VREF, v);
+668         return ret;
+669 }
+670 
+671 
+672 static int ov7670_enum_fmt(struct v4l2_subdev *sd, struct v4l2_fmtdesc *fmt)
+673 {
+674         struct ov7670_format_struct *ofmt;
+675 
+676         if (fmt->index >= N_OV7670_FMTS)
+677                 return -EINVAL;
+678 
+679         ofmt = ov7670_formats + fmt->index;
+680         fmt->flags = 0;
+681         strcpy(fmt->description, ofmt->desc);
+682         fmt->pixelformat = ofmt->pixelformat;
+683         return 0;
+684 }
+685 
+686 
+687 static int ov7670_try_fmt_internal(struct v4l2_subdev *sd,
+688                 struct v4l2_format *fmt,
+689                 struct ov7670_format_struct **ret_fmt,
+690                 struct ov7670_win_size **ret_wsize)
+691 {
+692         int index;
+693         struct ov7670_win_size *wsize;
+694         struct v4l2_pix_format *pix = &fmt->fmt.pix;
+695 
+696         for (index = 0; index < N_OV7670_FMTS; index++)
+697                 if (ov7670_formats[index].pixelformat == pix->pixelformat)
+698                         break;
+699         if (index >= N_OV7670_FMTS) {
+700                 /* default to first format */
+701                 index = 0;
+702                 pix->pixelformat = ov7670_formats[0].pixelformat;
+703         }
+704         if (ret_fmt != NULL)
+705                 *ret_fmt = ov7670_formats + index;
+706         /*
+707          * Fields: the OV devices claim to be progressive.
+708          */
+709         pix->field = V4L2_FIELD_NONE;
+710         /*
+711          * Round requested image size down to the nearest
+712          * we support, but not below the smallest.
+713          */
+714         for (wsize = ov7670_win_sizes; wsize < ov7670_win_sizes + N_WIN_SIZES;
+715              wsize++)
+716                 if (pix->width >= wsize->width && pix->height >= wsize->height)
+717                         break;
+718         if (wsize >= ov7670_win_sizes + N_WIN_SIZES)
+719                 wsize--;   /* Take the smallest one */
+720         if (ret_wsize != NULL)
+721                 *ret_wsize = wsize;
+722         /*
+723          * Note the size we'll actually handle.
+724          */
+725         pix->width = wsize->width;
+726         pix->height = wsize->height;
+727         pix->bytesperline = pix->width*ov7670_formats[index].bpp;
+728         pix->sizeimage = pix->height*pix->bytesperline;
+729         return 0;
+730 }
+731 
+732 static int ov7670_try_fmt(struct v4l2_subdev *sd, struct v4l2_format *fmt)
+733 {
+734         return ov7670_try_fmt_internal(sd, fmt, NULL, NULL);
+735 }
+736 
+737 /*
+738  * Set a format.
+739  */
+740 static int ov7670_s_fmt(struct v4l2_subdev *sd, struct v4l2_format *fmt)
+741 {
+742         int ret;
+743         struct ov7670_format_struct *ovfmt;
+744         struct ov7670_win_size *wsize;
+745         struct ov7670_info *info = to_state(sd);
+746         unsigned char com7, clkrc = 0;
+747 
+748         ret = ov7670_try_fmt_internal(sd, fmt, &ovfmt, &wsize);
+749         if (ret)
+750                 return ret;
+751         /*
+752          * HACK: if we're running rgb565 we need to grab then rewrite
+753          * CLKRC.  If we're *not*, however, then rewriting clkrc hoses
+754          * the colors.
+755          */
+756         if (fmt->fmt.pix.pixelformat == V4L2_PIX_FMT_RGB565) {
+757                 ret = ov7670_read(sd, REG_CLKRC, &clkrc);
+758                 if (ret)
+759                         return ret;
+760         }
+761         /*
+762          * COM7 is a pain in the ass, it doesn't like to be read then
+763          * quickly written afterward.  But we have everything we need
+764          * to set it absolutely here, as long as the format-specific
+765          * register sets list it first.
+766          */
+767         com7 = ovfmt->regs[0].value;
+768         com7 |= wsize->com7_bit;
+769         ov7670_write(sd, REG_COM7, com7);
+770         /*
+771          * Now write the rest of the array.  Also store start/stops
+772          */
+773         ov7670_write_array(sd, ovfmt->regs + 1);
+774         ov7670_set_hw(sd, wsize->hstart, wsize->hstop, wsize->vstart,
+775                         wsize->vstop);
+776         ret = 0;
+777         if (wsize->regs)
+778                 ret = ov7670_write_array(sd, wsize->regs);
+779         info->fmt = ovfmt;
+780 
+781         if (fmt->fmt.pix.pixelformat == V4L2_PIX_FMT_RGB565 && ret == 0)
+782                 ret = ov7670_write(sd, REG_CLKRC, clkrc);
+783         return ret;
+784 }
+785 
+786 /*
+787  * Implement G/S_PARM.  There is a "high quality" mode we could try
+788  * to do someday; for now, we just do the frame rate tweak.
+789  */
+790 static int ov7670_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+791 {
+792         struct v4l2_captureparm *cp = &parms->parm.capture;
+793         unsigned char clkrc;
+794         int ret;
+795 
+796         if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+797                 return -EINVAL;
+798         ret = ov7670_read(sd, REG_CLKRC, &clkrc);
+799         if (ret < 0)
+800                 return ret;
+801         memset(cp, 0, sizeof(struct v4l2_captureparm));
+802         cp->capability = V4L2_CAP_TIMEPERFRAME;
+803         cp->timeperframe.numerator = 1;
+804         cp->timeperframe.denominator = OV7670_FRAME_RATE;
+805         if ((clkrc & CLK_EXT) == 0 && (clkrc & CLK_SCALE) > 1)
+806                 cp->timeperframe.denominator /= (clkrc & CLK_SCALE);
+807         return 0;
+808 }
+809 
+810 static int ov7670_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+811 {
+812         struct v4l2_captureparm *cp = &parms->parm.capture;
+813         struct v4l2_fract *tpf = &cp->timeperframe;
+814         unsigned char clkrc;
+815         int ret, div;
+816 
+817         if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+818                 return -EINVAL;
+819         if (cp->extendedmode != 0)
+820                 return -EINVAL;
+821         /*
+822          * CLKRC has a reserved bit, so let's preserve it.
+823          */
+824         ret = ov7670_read(sd, REG_CLKRC, &clkrc);
+825         if (ret < 0)
+826                 return ret;
+827         if (tpf->numerator == 0 || tpf->denominator == 0)
+828                 div = 1;  /* Reset to full rate */
+829         else
+830                 div = (tpf->numerator*OV7670_FRAME_RATE)/tpf->denominator;
+831         if (div == 0)
+832                 div = 1;
+833         else if (div > CLK_SCALE)
+834                 div = CLK_SCALE;
+835         clkrc = (clkrc & 0x80) | div;
+836         tpf->numerator = 1;
+837         tpf->denominator = OV7670_FRAME_RATE/div;
+838         return ov7670_write(sd, REG_CLKRC, clkrc);
+839 }
+840 
+841 
+842 
+843 /*
+844  * Code for dealing with controls.
+845  */
+846 
+847 
+848 
+849 
+850 
+851 static int ov7670_store_cmatrix(struct v4l2_subdev *sd,
+852                 int matrix[CMATRIX_LEN])
+853 {
+854         int i, ret;
+855         unsigned char signbits = 0;
+856 
+857         /*
+858          * Weird crap seems to exist in the upper part of
+859          * the sign bits register, so let's preserve it.
+860          */
+861         ret = ov7670_read(sd, REG_CMATRIX_SIGN, &signbits);
+862         signbits &= 0xc0;
+863 
+864         for (i = 0; i < CMATRIX_LEN; i++) {
+865                 unsigned char raw;
+866 
+867                 if (matrix[i] < 0) {
+868                         signbits |= (1 << i);
+869                         if (matrix[i] < -255)
+870                                 raw = 0xff;
+871                         else
+872                                 raw = (-1 * matrix[i]) & 0xff;
+873                 }
+874                 else {
+875                         if (matrix[i] > 255)
+876                                 raw = 0xff;
+877                         else
+878                                 raw = matrix[i] & 0xff;
+879                 }
+880                 ret += ov7670_write(sd, REG_CMATRIX_BASE + i, raw);
+881         }
+882         ret += ov7670_write(sd, REG_CMATRIX_SIGN, signbits);
+883         return ret;
+884 }
+885 
+886 
+887 /*
+888  * Hue also requires messing with the color matrix.  It also requires
+889  * trig functions, which tend not to be well supported in the kernel.
+890  * So here is a simple table of sine values, 0-90 degrees, in steps
+891  * of five degrees.  Values are multiplied by 1000.
+892  *
+893  * The following naive approximate trig functions require an argument
+894  * carefully limited to -180 <= theta <= 180.
+895  */
+896 #define SIN_STEP 5
+897 static const int ov7670_sin_table[] = {
+898            0,    87,   173,   258,   342,   422,
+899          499,   573,   642,   707,   766,   819,
+900          866,   906,   939,   965,   984,   996,
+901         1000
+902 };
+903 
+904 static int ov7670_sine(int theta)
+905 {
+906         int chs = 1;
+907         int sine;
+908 
+909         if (theta < 0) {
+910                 theta = -theta;
+911                 chs = -1;
+912         }
+913         if (theta <= 90)
+914                 sine = ov7670_sin_table[theta/SIN_STEP];
+915         else {
+916                 theta -= 90;
+917                 sine = 1000 - ov7670_sin_table[theta/SIN_STEP];
+918         }
+919         return sine*chs;
+920 }
+921 
+922 static int ov7670_cosine(int theta)
+923 {
+924         theta = 90 - theta;
+925         if (theta > 180)
+926                 theta -= 360;
+927         else if (theta < -180)
+928                 theta += 360;
+929         return ov7670_sine(theta);
+930 }
+931 
+932 
+933 
+934 
+935 static void ov7670_calc_cmatrix(struct ov7670_info *info,
+936                 int matrix[CMATRIX_LEN])
+937 {
+938         int i;
+939         /*
+940          * Apply the current saturation setting first.
+941          */
+942         for (i = 0; i < CMATRIX_LEN; i++)
+943                 matrix[i] = (info->fmt->cmatrix[i]*info->sat) >> 7;
+944         /*
+945          * Then, if need be, rotate the hue value.
+946          */
+947         if (info->hue != 0) {
+948                 int sinth, costh, tmpmatrix[CMATRIX_LEN];
+949 
+950                 memcpy(tmpmatrix, matrix, CMATRIX_LEN*sizeof(int));
+951                 sinth = ov7670_sine(info->hue);
+952                 costh = ov7670_cosine(info->hue);
+953 
+954                 matrix[0] = (matrix[3]*sinth + matrix[0]*costh)/1000;
+955                 matrix[1] = (matrix[4]*sinth + matrix[1]*costh)/1000;
+956                 matrix[2] = (matrix[5]*sinth + matrix[2]*costh)/1000;
+957                 matrix[3] = (matrix[3]*costh - matrix[0]*sinth)/1000;
+958                 matrix[4] = (matrix[4]*costh - matrix[1]*sinth)/1000;
+959                 matrix[5] = (matrix[5]*costh - matrix[2]*sinth)/1000;
+960         }
+961 }
+962 
+963 
+964 
+965 static int ov7670_s_sat(struct v4l2_subdev *sd, int value)
+966 {
+967         struct ov7670_info *info = to_state(sd);
+968         int matrix[CMATRIX_LEN];
+969         int ret;
+970 
+971         info->sat = value;
+972         ov7670_calc_cmatrix(info, matrix);
+973         ret = ov7670_store_cmatrix(sd, matrix);
+974         return ret;
+975 }
+976 
+977 static int ov7670_g_sat(struct v4l2_subdev *sd, __s32 *value)
+978 {
+979         struct ov7670_info *info = to_state(sd);
+980 
+981         *value = info->sat;
+982         return 0;
+983 }
+984 
+985 static int ov7670_s_hue(struct v4l2_subdev *sd, int value)
+986 {
+987         struct ov7670_info *info = to_state(sd);
+988         int matrix[CMATRIX_LEN];
+989         int ret;
+990 
+991         if (value < -180 || value > 180)
+992                 return -EINVAL;
+993         info->hue = value;
+994         ov7670_calc_cmatrix(info, matrix);
+995         ret = ov7670_store_cmatrix(sd, matrix);
+996         return ret;
+997 }
+998 
+999 
+1000 static int ov7670_g_hue(struct v4l2_subdev *sd, __s32 *value)
+1001 {
+1002         struct ov7670_info *info = to_state(sd);
+1003 
+1004         *value = info->hue;
+1005         return 0;
+1006 }
+1007 
+1008 
+1009 /*
+1010  * Some weird registers seem to store values in a sign/magnitude format!
+1011  */
+1012 static unsigned char ov7670_sm_to_abs(unsigned char v)
+1013 {
+1014         if ((v & 0x80) == 0)
+1015                 return v + 128;
+1016         return 128 - (v & 0x7f);
+1017 }
+1018 
+1019 
+1020 static unsigned char ov7670_abs_to_sm(unsigned char v)
+1021 {
+1022         if (v > 127)
+1023                 return v & 0x7f;
+1024         return (128 - v) | 0x80;
+1025 }
+1026 
+1027 static int ov7670_s_brightness(struct v4l2_subdev *sd, int value)
+1028 {
+1029         unsigned char com8 = 0, v;
+1030         int ret;
+1031 
+1032         ov7670_read(sd, REG_COM8, &com8);
+1033         com8 &= ~COM8_AEC;
+1034         ov7670_write(sd, REG_COM8, com8);
+1035         v = ov7670_abs_to_sm(value);
+1036         ret = ov7670_write(sd, REG_BRIGHT, v);
+1037         return ret;
+1038 }
+1039 
+1040 static int ov7670_g_brightness(struct v4l2_subdev *sd, __s32 *value)
+1041 {
+1042         unsigned char v = 0;
+1043         int ret = ov7670_read(sd, REG_BRIGHT, &v);
+1044 
+1045         *value = ov7670_sm_to_abs(v);
+1046         return ret;
+1047 }
+1048 
+1049 static int ov7670_s_contrast(struct v4l2_subdev *sd, int value)
+1050 {
+1051         return ov7670_write(sd, REG_CONTRAS, (unsigned char) value);
+1052 }
+1053 
+1054 static int ov7670_g_contrast(struct v4l2_subdev *sd, __s32 *value)
+1055 {
+1056         unsigned char v = 0;
+1057         int ret = ov7670_read(sd, REG_CONTRAS, &v);
+1058 
+1059         *value = v;
+1060         return ret;
+1061 }
+1062 
+1063 static int ov7670_g_hflip(struct v4l2_subdev *sd, __s32 *value)
+1064 {
+1065         int ret;
+1066         unsigned char v = 0;
+1067 
+1068         ret = ov7670_read(sd, REG_MVFP, &v);
+1069         *value = (v & MVFP_MIRROR) == MVFP_MIRROR;
+1070         return ret;
+1071 }
+1072 
+1073 
+1074 static int ov7670_s_hflip(struct v4l2_subdev *sd, int value)
+1075 {
+1076         unsigned char v = 0;
+1077         int ret;
+1078 
+1079         ret = ov7670_read(sd, REG_MVFP, &v);
+1080         if (value)
+1081                 v |= MVFP_MIRROR;
+1082         else
+1083                 v &= ~MVFP_MIRROR;
+1084         msleep(10);  /* FIXME */
+1085         ret += ov7670_write(sd, REG_MVFP, v);
+1086         return ret;
+1087 }
+1088 
+1089 
+1090 
+1091 static int ov7670_g_vflip(struct v4l2_subdev *sd, __s32 *value)
+1092 {
+1093         int ret;
+1094         unsigned char v = 0;
+1095 
+1096         ret = ov7670_read(sd, REG_MVFP, &v);
+1097         *value = (v & MVFP_FLIP) == MVFP_FLIP;
+1098         return ret;
+1099 }
+1100 
+1101 
+1102 static int ov7670_s_vflip(struct v4l2_subdev *sd, int value)
+1103 {
+1104         unsigned char v = 0;
+1105         int ret;
+1106 
+1107         ret = ov7670_read(sd, REG_MVFP, &v);
+1108         if (value)
+1109                 v |= MVFP_FLIP;
+1110         else
+1111                 v &= ~MVFP_FLIP;
+1112         msleep(10);  /* FIXME */
+1113         ret += ov7670_write(sd, REG_MVFP, v);
+1114         return ret;
+1115 }
+1116 
+1117 static int ov7670_queryctrl(struct v4l2_subdev *sd,
+1118                 struct v4l2_queryctrl *qc)
+1119 {
+1120         /* Fill in min, max, step and default value for these controls. */
+1121         switch (qc->id) {
+1122         case V4L2_CID_BRIGHTNESS:
+1123                 return v4l2_ctrl_query_fill(qc, 0, 255, 1, 128);
+1124         case V4L2_CID_CONTRAST:
+1125                 return v4l2_ctrl_query_fill(qc, 0, 127, 1, 64);
+1126         case V4L2_CID_VFLIP:
+1127         case V4L2_CID_HFLIP:
+1128                 return v4l2_ctrl_query_fill(qc, 0, 1, 1, 0);
+1129         case V4L2_CID_SATURATION:
+1130                 return v4l2_ctrl_query_fill(qc, 0, 256, 1, 128);
+1131         case V4L2_CID_HUE:
+1132                 return v4l2_ctrl_query_fill(qc, -180, 180, 5, 0);
+1133         }
+1134         return -EINVAL;
+1135 }
+1136 
+1137 static int ov7670_g_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+1138 {
+1139         switch (ctrl->id) {
+1140         case V4L2_CID_BRIGHTNESS:
+1141                 return ov7670_g_brightness(sd, &ctrl->value);
+1142         case V4L2_CID_CONTRAST:
+1143                 return ov7670_g_contrast(sd, &ctrl->value);
+1144         case V4L2_CID_SATURATION:
+1145                 return ov7670_g_sat(sd, &ctrl->value);
+1146         case V4L2_CID_HUE:
+1147                 return ov7670_g_hue(sd, &ctrl->value);
+1148         case V4L2_CID_VFLIP:
+1149                 return ov7670_g_vflip(sd, &ctrl->value);
+1150         case V4L2_CID_HFLIP:
+1151                 return ov7670_g_hflip(sd, &ctrl->value);
+1152         }
+1153         return -EINVAL;
+1154 }
+1155 
+1156 static int ov7670_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
+1157 {
+1158         switch (ctrl->id) {
+1159         case V4L2_CID_BRIGHTNESS:
+1160                 return ov7670_s_brightness(sd, ctrl->value);
+1161         case V4L2_CID_CONTRAST:
+1162                 return ov7670_s_contrast(sd, ctrl->value);
+1163         case V4L2_CID_SATURATION:
+1164                 return ov7670_s_sat(sd, ctrl->value);
+1165         case V4L2_CID_HUE:
+1166                 return ov7670_s_hue(sd, ctrl->value);
+1167         case V4L2_CID_VFLIP:
+1168                 return ov7670_s_vflip(sd, ctrl->value);
+1169         case V4L2_CID_HFLIP:
+1170                 return ov7670_s_hflip(sd, ctrl->value);
+1171         }
+1172         return -EINVAL;
+1173 }
+1174 
+1175 static int ov7670_g_chip_ident(struct v4l2_subdev *sd,
+1176                 struct v4l2_dbg_chip_ident *chip)
+1177 {
+1178         struct i2c_client *client = v4l2_get_subdevdata(sd);
+1179 
+1180         return v4l2_chip_ident_i2c_client(client, chip, V4L2_IDENT_OV7670, 0);
+1181 }
+1182 
+1183 #ifdef CONFIG_VIDEO_ADV_DEBUG
+1184 static int ov7670_g_register(struct v4l2_subdev *sd, struct v4l2_dbg_register *reg)
+1185 {
+1186         struct i2c_client *client = v4l2_get_subdevdata(sd);
+1187         unsigned char val = 0;
+1188         int ret;
+1189 
+1190         if (!v4l2_chip_match_i2c_client(client, &reg->match))
+1191                 return -EINVAL;
+1192         if (!capable(CAP_SYS_ADMIN))
+1193                 return -EPERM;
+1194         ret = ov7670_read(sd, reg->reg & 0xff, &val);
+1195         reg->val = val;
+1196         reg->size = 1;
+1197         return ret;
+1198 }
+1199 
+1200 static int ov7670_s_register(struct v4l2_subdev *sd, struct v4l2_dbg_register *reg)
+1201 {
+1202         struct i2c_client *client = v4l2_get_subdevdata(sd);
+1203 
+1204         if (!v4l2_chip_match_i2c_client(client, &reg->match))
+1205                 return -EINVAL;
+1206         if (!capable(CAP_SYS_ADMIN))
+1207                 return -EPERM;
+1208         ov7670_write(sd, reg->reg & 0xff, reg->val & 0xff);
+1209         return 0;
+1210 }
+1211 #endif
+1212 
+1213 /* ----------------------------------------------------------------------- */
+1214 
+1215 static const struct v4l2_subdev_core_ops ov7670_core_ops = {
+1216         .g_chip_ident = ov7670_g_chip_ident,
+1217         .g_ctrl = ov7670_g_ctrl,
+1218         .s_ctrl = ov7670_s_ctrl,
+1219         .queryctrl = ov7670_queryctrl,
+1220         .reset = ov7670_reset,
+1221         .init = ov7670_init,
+1222 #ifdef CONFIG_VIDEO_ADV_DEBUG
+1223         .g_register = ov7670_g_register,
+1224         .s_register = ov7670_s_register,
+1225 #endif
+1226 };
+1227 
+1228 static const struct v4l2_subdev_video_ops ov7670_video_ops = {
+1229         .enum_fmt = ov7670_enum_fmt,
+1230         .try_fmt = ov7670_try_fmt,
+1231         .s_fmt = ov7670_s_fmt,
+1232         .s_parm = ov7670_s_parm,
+1233         .g_parm = ov7670_g_parm,
+1234 };
+1235 
+1236 static const struct v4l2_subdev_ops ov7670_ops = {
+1237         .core = &ov7670_core_ops,
+1238         .video = &ov7670_video_ops,
+1239 };
+1240 
+1241 /* ----------------------------------------------------------------------- */
+1242 
+1243 static int ov7670_probe(struct i2c_client *client,
+1244                         const struct i2c_device_id *id)
+1245 {
+1246         struct v4l2_subdev *sd;
+1247         struct ov7670_info *info;
+1248         int ret;
+1249 
+1250         info = kzalloc(sizeof(struct ov7670_info), GFP_KERNEL);
+1251         if (info == NULL)
+1252                 return -ENOMEM;
+1253         sd = &info->sd;
+1254         v4l2_i2c_subdev_init(sd, client, &ov7670_ops);
+1255 
+1256         /* Make sure it's an ov7670 */
+1257         ret = ov7670_detect(sd);
+1258         if (ret) {
+1259                 v4l_dbg(1, debug, client,
+1260                         "chip found @ 0x%x (%s) is not an ov7670 chip.\n",
+1261                         client->addr << 1, client->adapter->name);
+1262                 kfree(info);
+1263                 return ret;
+1264         }
+1265         v4l_info(client, "chip found @ 0x%02x (%s)\n",
+1266                         client->addr << 1, client->adapter->name);
+1267 
+1268         info->fmt = &ov7670_formats[0];
+1269         info->sat = 128;        /* Review this */
+1270 
+1271         return 0;
+1272 }
+1273 
+1274 
+1275 static int ov7670_remove(struct i2c_client *client)
+1276 {
+1277         struct v4l2_subdev *sd = i2c_get_clientdata(client);
+1278 
+1279         v4l2_device_unregister_subdev(sd);
+1280         kfree(to_state(sd));
+1281         return 0;
+1282 }
+1283 
+1284 static const struct i2c_device_id ov7670_id[] = {
+1285         { "ov7670", 0 },
+1286         { }
+1287 };
+1288 MODULE_DEVICE_TABLE(i2c, ov7670_id);
+1289 
+1290 static struct v4l2_i2c_driver_data v4l2_i2c_data = {
+1291         .name = "ov7670",
+1292         .probe = ov7670_probe,
+1293         .remove = ov7670_remove,
+1294         .id_table = ov7670_id,
+1295 };
+1296 
+  This page was automatically generated by the LXR engine.

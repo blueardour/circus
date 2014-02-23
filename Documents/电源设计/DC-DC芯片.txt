@@ -1,0 +1,10 @@
+DC-DC芯片：
+	MP1410
+	TPS63020
+	
+	
+电源仿真器：
+	orcad（破_解全面，权威） 
+	ltspice(免费，可用) 
+	psim 
+	SIMetrix

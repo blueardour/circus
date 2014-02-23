@@ -1,0 +1,4 @@
+".\debug_in_ram\target.o" ".\debug_in_ram\irq.o" ".\debug_in_ram\startup.o" ".\debug_in_ram\spi.o" ".\debug_in_ram\lcd.o" ".\debug_in_ram\key.o" ".\debug_in_ram\delay.o" ".\debug_in_ram\main.o" -strict -scatter ".\src\mem_b.scf" 
+-entry 0x40000000 -map -xref -callgraph -symbols 
+-info sizes -info totals -info unused -info veneers 
+ -list ".\debug_in_RAM\Project.map" -o ".\debug_in_RAM\Project.axf"
