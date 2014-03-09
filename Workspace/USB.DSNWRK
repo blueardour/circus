@@ -18,3 +18,5 @@ ProjectPath=Modulers-RTC.PrjPcb
 ProjectPath=ALL.PrjPcb
 [Project9]
 ProjectPath=Convert.PrjPcb
+[Project10]
+ProjectPath=..\Mkkopter\电路\四旋翼飞行器\Documents\微四轴\微四轴.PrjPcb
